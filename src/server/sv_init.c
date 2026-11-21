@@ -1,0 +1,228 @@
+/*
+	This file is part of BMX Server.
+
+    BMX Server is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    BMX Server is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with BMX Server.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "server.h"
+#include <sys/stat.h>
+
+SV_SetConfigstring_t SV_SetConfigstring = (SV_SetConfigstring_t)ADDR(0x8089BF0,0x808FF60);
+SV_GetConfigstring_t SV_GetConfigstring = (SV_GetConfigstring_t)ADDR(0x808B05C,0x8090144);
+
+netadr_t authorizeAddress;
+netadr_t masterAddress;
+
+LinkedList banlist = NULL;
+
+void X_ReadBannedList(bool print_t) {
+	FILE *f;
+	netadr_t adr;
+	banInfo_t *ban;
+	char buf[256];
+	char* bufp = NULL;
+	
+	list_clear(&banlist);
+	
+	f = fopen("ipbans.txt", "r");
+	if(f) {
+		while(fgets(buf, sizeof(buf), f)) {
+			char *reason = strchr(buf, ':');
+			if(reason != NULL)
+				*reason++ = '\0';
+			bufp = utrim(buf);
+			if(!strlen(bufp))
+				continue;
+			NET_StringToAdr(bufp, &adr);
+			ban = (banInfo_t*)xalloc(sizeof(banInfo_t));
+			*ban->reason = 0;
+			ban->type = IPBAN;
+			ban->adr = adr;
+			if(reason != NULL)
+				strncpy(ban->reason, reason, sizeof(ban->reason));
+			_list_add(&banlist, ban);
+			if(print_t)
+				printf("Added IP '%s' to the list.\n", NET_BaseAdrToString(adr));
+		}
+		fclose(f);
+	}
+	
+	f = fopen("muidbans.txt", "r");
+	
+	if(f) {
+		while(fgets(buf, sizeof(buf), f)) {
+			bufp = utrim(buf);
+			if(!strlen(bufp))
+				continue;
+			if(atoi(bufp) == 0)
+				continue;
+			ban = (banInfo_t*)xalloc(sizeof(banInfo_t));
+			*ban->reason = 0;
+			ban->type = MUIDBAN;
+			Q_strncpyz(ban->mUID, bufp, sizeof(ban->mUID));
+			_list_add(&banlist, ban);
+			if(print_t)
+				cprintf(PRINT_INFO, "Added mUID '%s' to the list.\n", bufp);
+		}
+		fclose(f);
+	}
+}
+
+cvar_t *developer;
+
+void SV_Init( void ) {
+	XDBG_ONCE("SV_Init");
+	void (*init)( void );
+	*(int*)&init = ADDR(0x808A94C,0x80913B3);
+	
+	init();
+	
+	if(clientsize != sizeof(client_t)) {
+		
+		cprintf(PRINT_UNDERLINE | PRINT_ERR, "ERROR: client_t size doesn't fit clientsize!!! %i != %i\n", sizeof(client_t), clientsize);
+	} else {
+		
+		//cprintf(PRINT_UNDERLINE | PRINT_GOOD, "GOOD: SIZE IS SAME OF CLIENT\n");
+	}
+	
+	if ( NET_StringToAdr( x_mastername, &x_master ) )
+		x_master.port = BigShort( 20510 );
+	
+	X_ReadBannedList(true);
+	
+	developer = Cvar_Get("developer", "0", 256);
+	sv_running = Cvar_Get("sv_running", "0", 64);
+	sv_maxclients = Cvar_Get("sv_maxclients", "20", 36);
+	sv_privateClients = Cvar_Get("sv_privateClients", "0", 4);
+	g_gametype = Cvar_Get("g_gametype", "dm", 36);
+	mapname = Cvar_Get("mapname", "nomap", 68);
+	sv_hostname = Cvar_Get("sv_hostname", "BMX Server", 5);
+	//sv_maxRate = Cvar_Get("sv_maxRate", "0", 5);
+	sv_maxRate = Cvar_FindVar("sv_maxRate");
+	sv_maxPing = Cvar_Get("sv_maxPing", "0", 5);
+	sv_minPing = Cvar_Get("sv_minPing", "0", 5);
+	sv_floodProtect = Cvar_Get("sv_floodProtect", "1", 5);
+	sv_allowAnonymous = Cvar_Get("sv_allowAnonymous", "", 4);
+	sv_showCommands = Cvar_Get("sv_showCommands", "0", 0);
+	sv_pure = Cvar_Get("sv_pure", "0", 12);
+	sv_serverid = Cvar_Get("sv_serverid", "0", 72);
+	rconPassword = Cvar_Get("rconPassword", "", 256);
+	sv_privatePassword = Cvar_Get("sv_privatePassword", "", 256);
+	sv_fps = Cvar_Get("sv_fps", "20", 256);
+	sv_timeout = Cvar_Get("sv_timeout", "240", 256);
+	sv_zombietime = Cvar_Get("sv_zombietime", "2", 256);
+	sv_allowDownload = Cvar_Get("sv_allowDownload", "1", 1);
+	Cvar_Get("sv_wwwDownload", "1", 1);
+	Cvar_Get("sv_wwwBaseURL", "", CVAR_SYSTEMINFO | 1);
+	/*sv_master1 = Cvar_Get("sv_master1", "codmaster.activision.com", 0);
+	sv_master2 = Cvar_Get("sv_master2", "", 1);
+	sv_master3 = Cvar_Get("sv_master3", "", 1);
+	sv_master4 = Cvar_Get("sv_master4", "", 1);
+	sv_master5 = Cvar_Get("sv_master5", "", 1);*/
+	sv_reconnectlimit = Cvar_Get("sv_reconnectlimit", "3", 0);
+	sv_showloss = Cvar_Get("sv_showloss", "0", 0);
+	sv_padPackets = Cvar_Get("sv_padPackets", "0", 0);
+	sv_killserver = Cvar_Get("sv_killserver", "0", 0);
+	sv_onlyVisibleClients = Cvar_Get("sv_onlyVisibleClients", "0", 0);
+	sv_showAverageBPS = Cvar_Get("sv_showAverageBPS", "0", 0);
+	sv_mapRotation = Cvar_Get("sv_mapRotation", "", 0);
+	sv_mapRotationCurrent = Cvar_Get("sv_mapRotationCurrent", "", 0);
+	#if CODPATCH == 5
+	protocol = Cvar_Get("protocol", "6", 68);
+	shortversion = Cvar_Get("shortversion", "1.5", 68);
+	#else
+	protocol = Cvar_Get("protocol", "1", 68);
+	shortversion = Cvar_Get("shortversion", "1.1", 68);
+	#endif
+	dedicated = Cvar_Get("dedicated", "2", 64);
+	sv_fastDownload = Cvar_Get("sv_fastDownload", "0", CVAR_ARCHIVE);
+	sv_downloadNotifications = Cvar_Get("sv_downloadNotifications", "0", CVAR_ARCHIVE);
+	sv_debugRate = Cvar_Get("sv_debugRate", "0", CVAR_ARCHIVE);
+	x_globalbans = Cvar_Get("x_globalbans", "1", 0);
+	x_spectator_noclip = Cvar_Get("x_spectator_noclip", "0", CVAR_ARCHIVE);
+	x_connectmessage = Cvar_Get("x_connectmessage", "", CVAR_ARCHIVE);
+	cl_allowDownload = Cvar_Get("cl_allowDownload", "0", CVAR_SYSTEMINFO);
+	g_resetSlide = Cvar_Get("g_resetSlide", "0", CVAR_ARCHIVE);
+	
+	Cvar_Get("rate", "25000", CVAR_SYSTEMINFO);
+	Cvar_Get("snaps", "40", CVAR_SYSTEMINFO);
+	
+	extern cvar_t *x_cl_adsair;
+	x_cl_adsair = Cvar_Get("x_cl_adsair", "0", 0);
+	
+	cvar_t *x_nopbots = Cvar_Get("x_nopbots", "0", 0);
+	/*
+		NOP SV_BotUsermove calls
+	*/
+	
+	if(x_nopbots->integer) {
+		#if CODPATCH == 1
+		__nop(0x808D152, 5); /* 1.5: SV_BotUserMove has a single call site */
+		#endif
+		__nop(ADDR(0x808D492,0x809427B), 5);
+	}
+	
+	#if CODPATCH == 5
+	sv_disableClientConsole = Cvar_Get("sv_disableClientConsole", "0", 8);
+	#endif
+	
+	x_authorize = Cvar_Get("x_authorize", "0", 0);
+	/*Both needed for deathrun server to prevent players from blocking each other*/
+	x_contents = Cvar_Get("x_contents", "-1", 0);
+	x_stuck = Cvar_Get("x_stuck", "0", 0); 
+	
+	Cvar_Get(BMX_SERVERINFO_KEY, va("BMX Server v%d", CURRENTBUILD), CVAR_SERVERINFO | CVAR_ROM | CVAR_NORESTART);
+	Cvar_Get(BMX_DATE_CVAR, __DATE__, CVAR_SERVERINFO | CVAR_ROM);
+	
+	x_bannedmessage = Cvar_Get("x_bannedmsg", "You have been banned from this server.", 0);
+	
+	sv_master[0] = Cvar_Get("sv_master1", "codmaster.activision.com", 0);
+	sv_master[1] = Cvar_Get("sv_master2", "", CVAR_ARCHIVE);
+	sv_master[2] = Cvar_Get("sv_master3", "", CVAR_ARCHIVE);
+	sv_master[3] = Cvar_Get("sv_master4", "", CVAR_ARCHIVE);
+	sv_master[4] = Cvar_Get("sv_master5", "", CVAR_ARCHIVE);
+	
+	#define MASTER_SERVER_NAME "codmaster.activision.com"
+	
+	cprintf(PRINT_GOOD, "Resolving %s\n", MASTER_SERVER_NAME );
+	if ( NET_StringToAdr( MASTER_SERVER_NAME, &masterAddress ) )
+		masterAddress.port = BigShort( 20510 );
+				
+	#define AUTHORIZE_SERVER_NAME "codauthorize.activision.com"
+	
+	if ( !authorizeAddress.ip[0] && authorizeAddress.type != NA_BAD ) {
+		cprintf(PRINT_GOOD, "Resolving %s\n", AUTHORIZE_SERVER_NAME );
+		if ( !NET_StringToAdr( AUTHORIZE_SERVER_NAME, &authorizeAddress ) ) {
+			cprintf(PRINT_ERR, "Couldn't resolve address\n" );
+			return;
+		}
+		authorizeAddress.port = BigShort( 20500 );
+		cprintf(PRINT_GOOD, "%s resolved to %i.%i.%i.%i:%i\n", AUTHORIZE_SERVER_NAME,
+					authorizeAddress.ip[0], authorizeAddress.ip[1],
+					authorizeAddress.ip[2], authorizeAddress.ip[3],
+					BigShort( authorizeAddress.port ) );
+	}
+}
+
+void SV_Shutdown(char *finalmsg) {
+	XDBG_ONCE("SV_Shutdown");
+	void (*o)(char*) = (void(*)(char*))ADDR(0x808AD8C,0x8091A22);
+	o(finalmsg);
+}
+
+void SV_SpawnServer(char *server) {
+	XDBG_ONCE("SV_SpawnServer");
+	void (*spawnserver)(char*) = (void(*)(char*))ADDR(0x808A220,0x8090D0F);
+	spawnserver(server);
+}
